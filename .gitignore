@@ -1,0 +1,94 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# PyEnv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# pytest
+.pytest_cache/
+
+# MyPy
+.mypy_cache/
+
+# Coverage
+.coverage
+.coverage.*
+,coverage
+htmlcov/
+.cache
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Linux trash
+Trash-*/
+
+# Docker
+docker-compose.override.yml
+*.log
+
+# Secrets and environment variables
+.env
+.env.*
+credentials/
+secrets/
+*.pem
+*.key
+
+# SSH
+ssh_config
+id_rsa
+id_rsa.pub
+
+# Logs
+*.log
+logs/
+
+# Database
+*.sqlite3
+
+# Ignore config if it contains secrets; keep checked-in if it contains only defaults
+# If your config/config.py contains secrets, uncomment the next line to ignore it
+# config/config.py

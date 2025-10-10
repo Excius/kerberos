@@ -1,0 +1,14 @@
+# Configuration (keys, ports, etc.)
+
+
+AS_HOST='127.0.0.1'
+AS_PORT=8000
+
+TGS_HOST='127.0.0.1'
+TGS_PORT=8001
+
+SERVICE_HOST='127.0.0.1'
+SERVICE_PORT=8002
+
+
+TGS_SECRET_KEY=b'128mebA1QJ5gmaGB2bZRXetk/9uT/79Qt24yw12Im7E='
