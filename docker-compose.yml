@@ -1,69 +1,121 @@
+x-kerberos-app: &kerberos-app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: kerberos-project-app
 
 services:
-  as-server:
-    build: .
-    ports:
-      - "8000:8000"
+  # Certificate Authority - The trusted ID issuer
+  ca-server:
+    <<: *kerberos-app
+    container_name: ca_server
+    command: python ca_server/main.py
     volumes:
-      - ./as_server:/app/as_server
-      - ./common:/app/common
-      - ./config:/app/config
-    command: python as_server/as_server.py
-    healthcheck:
-      test: ["CMD", "python", "-c", 'import socket,sys; s=socket.socket(); s.settimeout(1); try: s.connect(("127.0.0.1",8000)); s.close(); except: import sys; sys.exit(1)']
-      interval: 10s
-      timeout: 2s
-      retries: 5
+      - ./ca_server:/app/ca_server
+      - ca-data:/app/data # Persistent volume for DB and certs
     networks:
       - kerberos-net
 
-  tgs-server:
-    build: .
+  # Primary KDC - The main authentication hub
+  primary-kdc:
+    <<: *kerberos-app
+    container_name: primary_kdc
+    command: python kdc_server/main.py --role primary
     ports:
-      - "8001:8001"
+      - "8888:8888" # Using a non-standard port for our custom KDC
     volumes:
-      - ./tgs_server:/app/tgs_server
-      - ./common:/app/common
-      - ./config:/app/config
-    command: python tgs_server/tgs_server.py
-    healthcheck:
-      test: ["CMD", "python", "-c", 'import socket,sys; s=socket.socket(); s.settimeout(1); try: s.connect(("127.0.0.1",8001)); s.close(); except: import sys; sys.exit(1)']
-      interval: 10s
-      timeout: 2s
-      retries: 5
+      - ./kdc_server:/app/kdc_server
+      - kdc-data-primary:/app/db # Persistent volume for the master DB
+      - ca-data:/app/certs # To access the CA's public cert
     networks:
       - kerberos-net
-
-  service-server:
-    build: .
-    ports:
-      - "8002:8002"
-    volumes:
-      - ./service_server:/app/service_server
-      - ./common:/app/common
-      - ./config:/app/config
-    command: python service_server/service_server.py
     healthcheck:
-      test: ["CMD", "python", "-c", 'import socket,sys; s=socket.socket(); s.settimeout(1); try: s.connect(("127.0.0.1",8002)); s.close(); except: import sys; sys.exit(1)']
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; s=socket.socket(); s.connect(('127.0.0.1', 8888))",
+        ]
       interval: 10s
-      timeout: 2s
+      timeout: 3s
       retries: 5
-    networks:
-      - kerberos-net
 
-  client:
-    build: .
+  provisioning-server:
+    <<: *kerberos-app # Assuming it's also a Python app
+    container_name: provisioning_server
+    command: python provisioning_server/main.py
     volumes:
-      - ./client:/app/client
-      - ./common:/app/common
-      - ./config:/app/config
-    command: python client/client.py
+      # It needs access to the KDC's data to run admin commands
+      - kdc-data-primary:/var/lib/krb5kdc
+      # It also needs the krb5.conf file
+      - ./kdc/krb5.conf:/etc/krb5.conf
     networks:
       - kerberos-net
     depends_on:
-      - as-server
-      - tgs-server
-      - service-server
+      - primary-kdc
+
+  # Replica KDC - The backup for high availability
+  replica-kdc:
+    <<: *kerberos-app
+    container_name: replica_kdc
+    command: python kdc_server/main.py --role replica
+    ports:
+      - "8889:8888"
+    volumes:
+      - ./kdc_server:/app/kdc_server
+      - kdc-data-replica:/app/db # Separate volume for the replica DB
+      - ca-data:/app/certs
+    networks:
+      - kerberos-net
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; s=socket.socket(); s.connect(('127.0.0.1', 8888))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Service Server - The protected application
+  service-server:
+    <<: *kerberos-app
+    container_name: service_server
+    command: python service_server/main.py
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./service_server:/app/service_server
+    networks:
+      - kerberos-net
+    depends_on:
+      primary-kdc:
+        condition: service_healthy
+      replica-kdc:
+        condition: service_healthy
+
+  # Client - The user's application
+  client:
+    <<: *kerberos-app
+    container_name: client
+    command: python client/main.py
+    volumes:
+      - ./client:/app/client
+      - ca-data:/app/certs
+    networks:
+      - kerberos-net
+    depends_on:
+      service-server:
+        condition: service_started # or a proper healthcheck
+
+# Define named volumes for persistent data
+volumes:
+  ca-data:
+  kdc-data-primary:
+  kdc-data-replica:
 
 networks:
   kerberos-net:
