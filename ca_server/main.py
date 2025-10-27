@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 import requests
 
 
-from config.config import CA_PASSWORD, CA_PORT, PROVISIONING_SERVER_URL
+from config.config import CA_PASSWORD, CA_PORT, PROVISIONING_SERVER_URL, YOUR_REALM
 
 # --- Configuration ---
 DATA_DIR = "/app/data"
@@ -36,6 +36,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS certificates (
             serial_number INTEGER PRIMARY KEY,
             subject_name TEXT NOT NULL UNIQUE,
+            principal_name TEXT NOT NULL UNIQUE,
             status TEXT NOT NULL,
             issued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             expires_at TIMESTAMP NOT NULL
@@ -115,14 +116,27 @@ def submit_csr():
         csr = x509.load_pem_x509_csr(csr_pem)
         
         ca_key, ca_cert = load_or_create_ca() # Load CA
-        
         serial = get_next_serial()
         common_name = csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
         subject_name_str = csr.subject.rfc4514_string()
         not_valid_after = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365)
+
+        with get_db() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM certificates WHERE principal_name = ?",
+                (f"{common_name}@{YOUR_REALM}",)
+            )
+            user = cursor.fetchone()
+            if user:
+                return jsonify({"error": f"User '{common_name}' already found in database."}), 404
+
+        subject = x509.Name([
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "MyKerberosCA"),
+            x509.NameAttribute(NameOID.COMMON_NAME, f"{common_name}@"+YOUR_REALM),
+        ])
         
         new_cert = x509.CertificateBuilder().subject_name(
-            csr.subject
+            subject
         ).issuer_name(
             ca_cert.subject
         ).public_key(
@@ -139,28 +153,34 @@ def submit_csr():
 
         new_cert_pem = new_cert.public_bytes(serialization.Encoding.PEM)
 
+        fingerprint = new_cert.fingerprint(hashes.SHA256()).hex()
+
+        # Log it to the database
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO certificates (serial_number, subject_name, principal_name, status, expires_at) VALUES (?, ?, ?, ?, ?)",
+                (serial, subject_name_str, f"{common_name}@"+YOUR_REALM,"issued", not_valid_after)
+            )
+            conn.commit()
+
         # Save the new certificate
         cert_filename = f"{common_name.replace(' ', '_')}_{serial}.pem"
         cert_path = os.path.join(ISSUED_CERTS_DIR, cert_filename)
         with open(cert_path, "wb") as f:
             f.write(new_cert_pem)
 
-        # Log it to the database
-        with get_db() as conn:
-            conn.execute(
-                "INSERT INTO certificates (serial_number, subject_name, status, expires_at) VALUES (?, ?, ?, ?)",
-                (serial, subject_name_str, "issued", not_valid_after)
-            )
-            conn.commit()
+        
 
         print(f"Issued certificate for {common_name}")
 
         # --- NEW: Call Provisioning Server ---
+        res = None
         try:
             print(f"Calling provisioning server for user: {common_name}")
             provision_payload = {
                 "username": common_name,
-                "cert_subject": subject_name_str
+                "cert_subject": subject_name_str,
+                "cert_fingerprint": fingerprint
             }
             PROVISIONING_SERVER_ROUTE = PROVISIONING_SERVER_URL+"/create-user"
             res = requests.post(PROVISIONING_SERVER_ROUTE, json=provision_payload, timeout=5)
@@ -182,8 +202,22 @@ def submit_csr():
             # In a real app, you'd add this to a retry queue.
         # --- END NEW SECTION ---
 
-        # Return the certificate to the user
-        return new_cert_pem, 201, {'Content-Type': 'application/x-pem-file'}
+        # Get principal_name from provisioning response
+        principal_name = None
+        if res and res.status_code == 201:
+            try:
+                principal_name = res.json().get('principal_name')
+            except Exception as e:
+                print(f"Error parsing provisioning response: {e}")
+
+        # Return the certificate and principal_name to the user
+        return jsonify({
+            "status": "success",
+            "certificate": new_cert_pem.decode('utf-8'),
+            "principal_name": principal_name,
+            "subject": subject_name_str,
+            "fingerprint": fingerprint
+        }), 201
 
     except Exception as e:
         print(f"Error signing CSR: {e}")

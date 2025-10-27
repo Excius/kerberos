@@ -17,12 +17,14 @@ def create_user():
     Expects JSON payload:
     {
         "username": "newuser",
-        "cert_subject": "CN=newuser,O=MyKerberosProject"
+        "cert_subject": "CN=newuser,O=MyKerberosProject",
+        "cert_fingerprint": "sha256_hex_fingerprint"
     }
     """
     data = request.get_json(silent=True) or {}
     username = data.get('username')
     cert_subject = data.get('cert_subject')
+    cert_fingerprint = data.get('cert_fingerprint')
 
     if not username or not cert_subject:
         return jsonify({"error": "username and cert_subject are required"}), 400
@@ -38,10 +40,10 @@ def create_user():
         # for 'pkinit' (certificate-based) authentication.
         cursor.execute(
             """
-            INSERT INTO principals (principal_name, auth_type, cert_subject, secret_key_hash)
-            VALUES (?, 'pkinit', ?, NULL)
+            INSERT INTO principals (principal_name, auth_type, cert_subject, cert_fingerprint, secret_key_hash)
+            VALUES (?, 'pkinit', ?, ?, NULL)
             """,
-            (principal_name, cert_subject)
+            (principal_name, cert_subject, cert_fingerprint)
         )
         conn.commit()
         
@@ -50,7 +52,8 @@ def create_user():
             "message": "User principal created successfully",
             "principal_name": principal_name,
             "auth_type": "pkinit",
-            "cert_subject": cert_subject
+            "cert_subject": cert_subject,
+            "cert_fingerprint": cert_fingerprint
         }), 201
 
     except sqlite3.IntegrityError as e:

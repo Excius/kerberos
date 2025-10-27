@@ -28,16 +28,17 @@ def init_kdc_db():
         principal_name TEXT PRIMARY KEY NOT NULL,
         auth_type TEXT NOT NULL,
         cert_subject TEXT UNIQUE,
+        cert_fingerprint TEXT UNIQUE,
         secret_key_hash TEXT
     );
     """)
     
     # We can also pre-load the TGS and other service principals here
     # (This is a simplified example)
-    cursor.execute("""
-    INSERT OR IGNORE INTO principals (principal_name, auth_type, secret_key_hash)
-    VALUES ('tgs@YOUR_REALM', 'pre-shared-key', 'super-secret-tgs-key-hash');
-    """)
+    # cursor.execute("""
+    # INSERT OR IGNORE INTO principals (principal_name, auth_type, secret_key_hash)
+    # VALUES ('tgs@YOUR_REALM', 'pre-shared-key', 'super-secret-tgs-key-hash');
+    # """)
     
     conn.commit()
     conn.close()

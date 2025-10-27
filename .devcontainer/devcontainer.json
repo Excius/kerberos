@@ -14,19 +14,24 @@
         "ms-python.python",
         "ms-python.vscode-pylance",
         "ms-azuretools.vscode-docker",
-        "eamodio.gitlens",
-        "yy0931.vscode-sqlite3-editor"
+        "yy0931.vscode-sqlite3-editor",
+        "jlcs-es.x509-parser"
       ]
     }
   },
   "workspaceFolder": "/app",
   "workspaceMount": "source=${localWorkspaceFolder},target=/app,type=bind,consistency=cached",
-  "forwardPorts": [5000, 88, 749],
+  "forwardPorts": [
+    5000,
+    88,
+    749
+  ],
   "postCreateCommand": "cd /app && python -m pip install --no-cache-dir -r requirements.txt || true",
   "remoteUser": "root",
   "mounts": [
     "source=kerberos_data,target=/app/data,type=volume",
-    "source=kerberos_db,target=/app/db,type=volume"
+    "source=kerberos_db,target=/app/db,type=volume",
+    "source=kerberos_certs,target=/app/certs,type=volume"
   ],
   "remoteEnv": {
     "PYTHONUNBUFFERED": "1"

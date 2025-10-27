@@ -30,7 +30,7 @@ services:
     volumes:
       - ./kdc_server:/app/kdc_server
       - kdc-data-primary:/app/db # Persistent volume for the master DB
-      - ca-data:/app/certs # To access the CA's public cert
+      - ca-data:/app/data # To access the CA's public cert
     networks:
       - kerberos-net
     healthcheck:
