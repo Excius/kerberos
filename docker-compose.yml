@@ -9,7 +9,10 @@ services:
   ca-server:
     <<: *kerberos-app
     container_name: ca_server
-    command: python ca_server/main.py
+    working_dir: /app
+    command: python -m ca_server.main
+    ports:
+      - "5000:5000" # NOTE: need to remove in production; only for testing
     volumes:
       - ./ca_server:/app/ca_server
       - ca-data:/app/data # Persistent volume for DB and certs
@@ -20,7 +23,8 @@ services:
   primary-kdc:
     <<: *kerberos-app
     container_name: primary_kdc
-    command: python kdc_server/main.py --role primary
+    working_dir: /app
+    command: python -m kdc_server.main --role primary
     ports:
       - "8888:8888" # Using a non-standard port for our custom KDC
     volumes:
@@ -30,13 +34,7 @@ services:
     networks:
       - kerberos-net
     healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import socket; s=socket.socket(); s.connect(('127.0.0.1', 8888))",
-        ]
+      test: [ "CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('127.0.0.1', 8888))" ]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -44,12 +42,12 @@ services:
   provisioning-server:
     <<: *kerberos-app # Assuming it's also a Python app
     container_name: provisioning_server
-    command: python provisioning_server/main.py
+    working dir: /app
+    command: python -m provisioning_server.main
+    ports:
+      - "5001:5001"
     volumes:
-      # It needs access to the KDC's data to run admin commands
-      - kdc-data-primary:/var/lib/krb5kdc
-      # It also needs the krb5.conf file
-      - ./kdc/krb5.conf:/etc/krb5.conf
+      - kdc-data-primary:/app/db
     networks:
       - kerberos-net
     depends_on:
@@ -59,7 +57,8 @@ services:
   replica-kdc:
     <<: *kerberos-app
     container_name: replica_kdc
-    command: python kdc_server/main.py --role replica
+    working_dir: /app
+    command: python -m kdc_server.main --role replica
     ports:
       - "8889:8888"
     volumes:
@@ -69,13 +68,7 @@ services:
     networks:
       - kerberos-net
     healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import socket; s=socket.socket(); s.connect(('127.0.0.1', 8888))",
-        ]
+      test: [ "CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('127.0.0.1', 8888))" ]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -116,6 +109,7 @@ volumes:
   ca-data:
   kdc-data-primary:
   kdc-data-replica:
+
 
 networks:
   kerberos-net:

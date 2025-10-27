@@ -1,0 +1,32 @@
+{
+  "name": "Kerberos Dev Container",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": ".."
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.shell.linux": "/bin/zsh",
+        "python.analysis.typeCheckingMode": "basic"
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-azuretools.vscode-docker",
+        "eamodio.gitlens"
+      ]
+    }
+  },
+  "workspaceFolder": "/app",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/app,type=bind,consistency=cached",
+  "forwardPorts": [5000, 88, 749],
+  "postCreateCommand": "cd /app && python -m pip install --no-cache-dir -r requirements.txt || true",
+  "remoteUser": "root",
+  "mounts": [
+    "source=kerberos_data,target=/app/data,type=volume"
+  ],
+  "remoteEnv": {
+    "PYTHONUNBUFFERED": "1"
+  }
+}

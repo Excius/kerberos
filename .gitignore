@@ -96,3 +96,6 @@ logs/
 # Ignore config if it contains secrets; keep checked-in if it contains only defaults
 # If your config/config.py contains secrets, uncomment the next line to ignore it
 # config/config.py
+
+/data
+/db
