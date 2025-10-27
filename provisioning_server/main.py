@@ -1,19 +1,7 @@
-import os
 import sqlite3
-import sys
 from flask import Flask, request, jsonify
-from config.config import YOUR_REALM
-
-# --- Setup Python Path ---
-# This adds the parent directory (your project root) to the Python path.
-# It allows us to import the database functions from the 'kdc_server' directory.
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-try:
-    from kdc_server.database import get_db_conn
-except ImportError:
-    print("Error: Could not import 'get_db_conn' from 'kdc_server.database'.")
-    print("Ensure 'kdc_server/database.py' exists and the path is correct.")
-    sys.exit(1)
+from kdc_server.database import get_db_conn
+from config.config import PROVISIONING_SERVER_PORT, YOUR_REALM
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
@@ -86,5 +74,5 @@ if __name__ == '__main__':
     # to call 'init_kdc_db()' and create the database file.
     
     # Run the Flask server, making it accessible within the Docker network
-    app.run(host='0.0.0.0', port=5001)
+    app.run(host='0.0.0.0', port=PROVISIONING_SERVER_PORT)
 

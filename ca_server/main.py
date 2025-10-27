@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 import requests
 
 
-from config.config import CA_PASSWORD, PROVISIONING_SERVER_URL
+from config.config import CA_PASSWORD, CA_PORT, PROVISIONING_SERVER_URL
 
 # --- Configuration ---
 DATA_DIR = "/app/data"
@@ -193,4 +193,4 @@ if __name__ == "__main__":
     print("--- Starting CA API Server ---")
     init_db()
     load_or_create_ca()
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=CA_PORT)
