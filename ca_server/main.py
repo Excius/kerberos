@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 import requests
 
 
-from config.config import CA_PASSWORD, CA_PORT, PROVISIONING_SERVER_URL, YOUR_REALM
+from config.config import CA_PASSWORD, CA_PORT, PROVISIONING_SERVER_URL, REALM
 
 # --- Configuration ---
 DATA_DIR = "/app/data"
@@ -124,7 +124,7 @@ def submit_csr():
         with get_db() as conn:
             cursor = conn.execute(
                 "SELECT * FROM certificates WHERE principal_name = ?",
-                (f"{common_name}@{YOUR_REALM}",)
+                (f"{common_name}@{REALM}",)
             )
             user = cursor.fetchone()
             if user:
@@ -132,7 +132,7 @@ def submit_csr():
 
         subject = x509.Name([
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "MyKerberosCA"),
-            x509.NameAttribute(NameOID.COMMON_NAME, f"{common_name}@"+YOUR_REALM),
+            x509.NameAttribute(NameOID.COMMON_NAME, f"{common_name}@"+REALM),
         ])
         
         new_cert = x509.CertificateBuilder().subject_name(
@@ -155,13 +155,13 @@ def submit_csr():
 
         fingerprint = new_cert.fingerprint(hashes.SHA256()).hex()
 
-        # Log it to the database
-        with get_db() as conn:
-            conn.execute(
-                "INSERT INTO certificates (serial_number, subject_name, principal_name, status, expires_at) VALUES (?, ?, ?, ?, ?)",
-                (serial, subject_name_str, f"{common_name}@"+YOUR_REALM,"issued", not_valid_after)
-            )
-            conn.commit()
+        # Log it to the database (but don't commit yet)
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO certificates (serial_number, subject_name, principal_name, status, expires_at) VALUES (?, ?, ?, ?, ?)",
+            (serial, subject_name_str, f"{common_name}@"+REALM,"issued", not_valid_after)
+        )
+        # Note: Not committing yet
 
         # Save the new certificate
         cert_filename = f"{common_name.replace(' ', '_')}_{serial}.pem"
@@ -173,8 +173,9 @@ def submit_csr():
 
         print(f"Issued certificate for {common_name}")
 
-        # --- NEW: Call Provisioning Server ---
+        # --- Call Provisioning Server ---
         res = None
+        provisioning_success = False
         try:
             print(f"Calling provisioning server for user: {common_name}")
             provision_payload = {
@@ -185,39 +186,52 @@ def submit_csr():
             PROVISIONING_SERVER_ROUTE = PROVISIONING_SERVER_URL+"/create-user"
             res = requests.post(PROVISIONING_SERVER_ROUTE, json=provision_payload, timeout=5)
             
-            if res.status_code not in (201, 409): # 201=Created, 409=Conflict (already exists)
-                # If provisioning failed for a reason other than "already exists",
-                # we should log it. In a real system, you might "roll back" the
-                # certificate issuance or mark it as "pending provisioning".
+            if res.status_code in (201, 409):  # 201=Created, 409=Conflict (already exists)
+                provisioning_success = True
+                print(f"Provisioning server call successful (Status: {res.status_code})")
+            else:
                 print(f"WARNING: Failed to provision user '{common_name}'.")
                 print(f"Provisioning server responded with {res.status_code}: {res.text}")
-            else:
-                print(f"Provisioning server call successful (Status: {res.status_code})")
 
         except requests.exceptions.RequestException as e:
             # Handle cases where the provisioning server is down
             print(f"CRITICAL: Could not connect to provisioning server at {PROVISIONING_SERVER_ROUTE}")
             print(f"Error: {e}")
-            # This is a problem. The user has a cert but no KDC account.
-            # In a real app, you'd add this to a retry queue.
-        # --- END NEW SECTION ---
 
-        # Get principal_name from provisioning response
-        principal_name = None
-        if res and res.status_code == 201:
-            try:
-                principal_name = res.json().get('principal_name')
-            except Exception as e:
-                print(f"Error parsing provisioning response: {e}")
+        if provisioning_success:
+            # Commit the database changes
+            conn.commit()
+            
+            # Save the new certificate
+            cert_filename = f"{common_name.replace(' ', '_')}_{serial}.pem"
+            cert_path = os.path.join(ISSUED_CERTS_DIR, cert_filename)
+            with open(cert_path, "wb") as f:
+                f.write(new_cert_pem)
 
-        # Return the certificate and principal_name to the user
-        return jsonify({
-            "status": "success",
-            "certificate": new_cert_pem.decode('utf-8'),
-            "principal_name": principal_name,
-            "subject": subject_name_str,
-            "fingerprint": fingerprint
-        }), 201
+            print(f"Issued certificate for {common_name}")
+
+            # Get principal_name from provisioning response
+            principal_name = None
+            if res and res.status_code == 201:
+                try:
+                    principal_name = res.json().get('principal_name')
+                except Exception as e:
+                    print(f"Error parsing provisioning response: {e}")
+
+            # Return the certificate and principal_name to the user
+            conn.close()
+            return jsonify({
+                "status": "success",
+                "certificate": new_cert_pem.decode('utf-8'),
+                "principal_name": principal_name,
+                "subject": subject_name_str,
+                "fingerprint": fingerprint
+            }), 201
+        else:
+            # Revert changes
+            conn.rollback()
+            conn.close()
+            return jsonify({"error": "Failed to provision user in KDC. Certificate issuance reverted."}), 500
 
     except Exception as e:
         print(f"Error signing CSR: {e}")

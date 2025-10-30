@@ -1,7 +1,7 @@
 import sqlite3
 from flask import Flask, request, jsonify
 from kdc_server.database import get_db_conn
-from config.config import PROVISIONING_SERVER_PORT, YOUR_REALM
+from config.config import PROVISIONING_SERVER_PORT, REALM
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
@@ -29,7 +29,7 @@ def create_user():
     if not username or not cert_subject:
         return jsonify({"error": "username and cert_subject are required"}), 400
 
-    principal_name = f"{username}@{YOUR_REALM}"
+    principal_name = f"{username}@{REALM}"
     
     conn = None
     try:
@@ -40,7 +40,7 @@ def create_user():
         # for 'pkinit' (certificate-based) authentication.
         cursor.execute(
             """
-            INSERT INTO principals (principal_name, auth_type, cert_subject, cert_fingerprint, secret_key_hash)
+            INSERT INTO principals (principal_name, auth_type, cert_subject, cert_fingerprint, secret_key_b64)
             VALUES (?, 'pkinit', ?, ?, NULL)
             """,
             (principal_name, cert_subject, cert_fingerprint)

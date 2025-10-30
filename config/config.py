@@ -34,7 +34,9 @@ def _require_env_bytes(name: str) -> bytes:
 
 
 # Required secrets (must be present in environment or .env during development)
-TGS_SECRET_KEY = _require_env_bytes("TGS_SECRET_KEY")
+TGS_SECRET_KEY_B64 = os.environ.get("TGS_SECRET_KEY_B64")
+TGT_LIFETIME_SECONDS= int(os.environ.get("TGT_LIFETIME_SECONDS", "21600"))  # Default 6 hours
+
 CA_PASSWORD = _require_env_bytes("CA_PASSWORD")
 
 
@@ -44,4 +46,6 @@ CA_PORT = int(os.environ.get("CA_PORT", "5000"))
 PROVISIONING_SERVER_PORT = int(os.environ.get("PROVISIONING_SERVER_PORT", "5001"))
 PROVISIONING_SERVER_URL = os.environ.get("PROVISIONING_SERVER_URL", "http://localhost:5001")
 
-YOUR_REALM = os.environ.get("YOUR_REALM", "MYKERBEROSPROJECT")
+REALM = os.environ.get("REALM", "MYKERBEROSPROJECT")
+
+SERVICE_SECRET_KEY_B64 = os.environ.get("SERVICE_SECRET_KEY_B64")

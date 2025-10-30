@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from config.config import REALM, SERVICE_SECRET_KEY_B64, TGS_SECRET_KEY_B64
 
 # Define the path to the database, which will live in the persistent volume
 DB_DIR = "/app/db"
@@ -29,17 +30,23 @@ def init_kdc_db():
         auth_type TEXT NOT NULL,
         cert_subject TEXT UNIQUE,
         cert_fingerprint TEXT UNIQUE,
-        secret_key_hash TEXT
+        secret_key_b64 TEXT
     );
     """)
     
     # We can also pre-load the TGS and other service principals here
     # (This is a simplified example)
-    # cursor.execute("""
-    # INSERT OR IGNORE INTO principals (principal_name, auth_type, secret_key_hash)
-    # VALUES ('tgs@YOUR_REALM', 'pre-shared-key', 'super-secret-tgs-key-hash');
-    # """)
+    cursor.execute(f"""
+    INSERT OR IGNORE INTO principals (principal_name, auth_type, secret_key_b64)
+    VALUES ('tgs@{REALM}', 'pre-shared-key', ?)
+    """, (TGS_SECRET_KEY_B64,))
     
+    # Insert the Service Server principal with its base64-encoded secret key
+    cursor.execute(f"""
+    INSERT OR IGNORE INTO principals (principal_name, auth_type, secret_key_b64)
+    VALUES ('host/service.server@{REALM}', 'pre-shared-key', ?)
+    """, (SERVICE_SECRET_KEY_B64,))
+
     conn.commit()
     conn.close()
     print("KDC database initialized.")

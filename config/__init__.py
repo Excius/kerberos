@@ -7,6 +7,6 @@ This module re-exports the names from ``config.config`` so code can do either:
 
 Keep the surface area minimal and explicit.
 """
-from .config import TGS_SECRET_KEY, CA_PASSWORD
+from .config import TGS_SECRET_KEY_B64, CA_PASSWORD
 
-__all__ = ["TGS_SECRET_KEY", "CA_PASSWORD"]
+__all__ = ["TGS_SECRET_KEY_B64", "CA_PASSWORD"]

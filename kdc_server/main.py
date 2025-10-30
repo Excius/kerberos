@@ -6,11 +6,15 @@ import base64
 import os
 import sys
 import datetime
+import secrets
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric import rsa
+
+from config.config import REALM, TGT_LIFETIME_SECONDS
 
 
 # We need to import the DB functions from the kdc_server module.
@@ -25,7 +29,50 @@ except ImportError:
 
 
 # --- Configuration ---
-CA_CERT_PATH = "/app/data/ca_cert.pem" 
+CA_CERT_PATH = "/app/data/ca_cert.pem"
+TIMESTAMP_WINDOW_SECONDS = 300  # 5 minutes
+SERVICE_TICKET_LIFETIME_SECONDS = 300 # 5 minutes
+
+# --- Encryption Helpers ---
+
+def encrypt_with_aes_gcm(data_to_encrypt, key):
+    """Encrypts the TGT data with the given key. Returns the base64 string."""
+
+    nonce = os.urandom(12) # 12 bytes is standard for GCM
+    aesgcm = AESGCM(key)
+    ciphertext = aesgcm.encrypt(nonce, data_to_encrypt.encode('utf-8'), None)
+
+    # we must store the nonce with the ciphertext for decryption
+    return base64.b64encode(nonce + ciphertext).decode('utf-8')
+
+def decrypt_with_aes_gcm(ciphertext_b64, key):
+    """Decrypts an AES-GCM base64 string (nonce + ciphertext)."""
+    if isinstance(ciphertext_b64, str):
+        ciphertext_b64 = ciphertext_b64.encode('utf-8')
+    
+    ciphertext_with_nonce = base64.b64decode(ciphertext_b64)
+    nonce = ciphertext_with_nonce[:12]
+    ciphertext = ciphertext_with_nonce[12:]
+    
+    aesgcm = AESGCM(key)
+    plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+    return plaintext # Returns bytes
+
+
+def encrypt_with_public_key(data_to_encrpyt, public_key):
+    """Encrypts data with the given RSA public key """
+    if not isinstance(public_key, rsa.RSAPublicKey):
+        raise ValueError("Provided key is not an RSA public key.")
+    
+    ciphertext = public_key.encrypt(
+        data_to_encrpyt,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+    return base64.b64encode(ciphertext).decode('utf-8')
 
 # --- KDC Request Handler ---
 
@@ -72,8 +119,8 @@ class KDCRequestHandler(socketserver.BaseRequestHandler):
             # 3. Route the request based on its type
             if data.get('type') == 'AS_REQ':
                 self.handle_as_req(data)
-            # elif data.get('type') == 'TGS_REQ':
-            #     self.handle_tgs_req(data) # TODO in a future step
+            elif data.get('type') == 'TGS_REQ':
+                self.handle_tgs_req(data)
             else:
                 self.send_error("Invalid request type")
         
@@ -115,7 +162,7 @@ class KDCRequestHandler(socketserver.BaseRequestHandler):
             
             # Check validity dates
             now = datetime.datetime.now(datetime.timezone.utc)
-            if now < client_cert.not_valid_before or now > client_cert.not_valid_after:
+            if now < client_cert.not_valid_before_utc or now > client_cert.not_valid_after_utc:
                 return self.send_error("Certificate is not currently valid (expired or not yet valid).")
 
             # Ensure issuer matches your CA
@@ -160,22 +207,30 @@ class KDCRequestHandler(socketserver.BaseRequestHandler):
                 (cert_fingerprint,)
             )
             principal_row = cursor.fetchone()
-            conn.close()
             
             if not principal_row:
                 # fallback: try matching subject string (less preferred)
                 cert_subject_str = client_cert.subject.rfc4514_string()
-                conn = get_db_conn()
-                cursor = conn.cursor()
                 cursor.execute(
                     "SELECT * FROM principals WHERE auth_type = 'pkinit' AND cert_subject = ?",
                     (cert_subject_str,)
                 )
                 principal_row = cursor.fetchone()
-                conn.close()
 
                 if not principal_row:
+                    conn.close()
                     return self.send_error("Unknown principal for presented certificate.")
+                
+            # Fetch TGS secret key
+            cursor.execute("SELECT secret_key_b64 FROM principals WHERE principal_name = ?", (f"tgs@{REALM}",))
+            tgs_row = cursor.fetchone()
+            conn.close()
+            
+            if not tgs_row:
+                return self.send_error("KDC is misconfigured: TGS principal not found.")
+            
+            tgs_secret_key = base64.b64decode(tgs_row['secret_key_b64'])
+
         except Exception as e:
             return self.send_error(f"Database lookup failed: {e}")
 
@@ -191,7 +246,7 @@ class KDCRequestHandler(socketserver.BaseRequestHandler):
                 "timestamp": data["timestamp"]
             }
 
-            message_bytes = json.dumps(signed_fields, sort_keys=True, seperators=(",", ":")).encode('utf-8')
+            message_bytes = json.dumps(signed_fields, sort_keys=True, separators=(",", ":")).encode('utf-8')
             # use separators to avoid whitespace differences
 
             client_public_key.verify(
@@ -223,7 +278,7 @@ class KDCRequestHandler(socketserver.BaseRequestHandler):
             except Exception:
                 return self.send_error("Invalid timestamp format.")
 
-            if abs((datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds()) > 300:
+            if abs((datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds()) > TIMESTAMP_WINDOW_SECONDS:
                 return self.send_error("Timestamp is outside the allowed window (possible replay attack).")
 
         except Exception as e:
@@ -233,20 +288,165 @@ class KDCRequestHandler(socketserver.BaseRequestHandler):
 
         # --- All Checks Passed ---
         # User is authenticated. Now we generate the TGT.
+
+        try:
+        
+            # Generate Session Key for the client
+            session_key = secrets.token_bytes(32)
+
+            # Got the client's public key for encrypting the session key
+            client_public_key = client_cert.public_key()
+            if not isinstance(client_public_key, rsa.RSAPublicKey):
+                return self.send_error("CA certificate must use RSA public key.")
+            
+            # Generate TGT (contains session key, username, expiry)
+            tgt_expiry = datetime.datetime.now(datetime.timezone.utc)+ datetime.timedelta(seconds=TGT_LIFETIME_SECONDS)
+
+            tgt_data = {
+                "session_key": base64.b64encode(session_key).decode('utf-8'),
+                "principal": principal_row['principal_name'],
+                "expiry_time": tgt_expiry.isoformat()
+            }
+
+            tgt_data_json = json.dumps(tgt_data, sort_keys=True)
+
+            # Encrypt TGT data with TGS secret key
+            encrypted_tgt = encrypt_with_aes_gcm(tgt_data_json, tgs_secret_key)
+
+            # Encrypt Session Key with client's public key
+            encrypted_session_key = encrypt_with_public_key(session_key, client_public_key)
+        except Exception as e:
+            return self.send_error(f"Error generating TGT: {e}")
+        
         print(f"Successfully authenticated user: {data['principal']}")
-        
-        # TODO: Generate Session Key for the client
-        # TODO: Generate TGT (contains session key, username, expiry)
-        # TODO: Encrypt TGT with TGS secret key (from DB)
-        # TODO: Encrypt Session Key with client's public key
-        
+
         response = {
             "status": "OK",
-            "message": f"Authentication successful for {data['principal']}.",
-            "principal": data['principal']
-            # TODO: Add the encrypted TGT and encrypted session key here
+            "message": f"Authentication successful for {principal_row['principal_name']}.",
+            "principal": principal_row['principal_name'],
+            "encrypted_tgt": encrypted_tgt,
+            "encrypted_session_key": encrypted_session_key,
         }
         self.send_response(response)
+
+    # --- TGS Request Handler ---
+    def handle_tgs_req(self, data):
+        """
+        Handles the Ticket Granting Server (TGS) request.
+        
+        Expects JSON:
+        {
+            "type": "TGS_REQ",
+            "tgt": "...",             // TGT from AS
+            "authenticator": "...",   // Encrypted authenticator
+            "service_principal": "..." // e.g., "host/service.server@YOUR_REALM"
+        }
+        """
+        print("Handling TGS_REQ...")
+
+        # 1. Get TGS secret key from DB
+        try:
+            cursor = get_db_conn().cursor()
+            cursor.execute("SELECT secret_key_b64 FROM principals WHERE principal_name =?", (f"tgs@{REALM}",))
+            tgs_row = cursor.fetchone()
+            if not tgs_row:
+                return self.send_error("KDC misconfigured: TGS principal not found.")
+            tgs_secret_key = base64.b64decode(tgs_row['secret_key_b64'])
+        except Exception as e:
+            return self.send_error(f"Failed to retrieve TGS key: {e}")
+        
+        # 2. Decrypt the TGT
+        try:
+            tgt_json = decrypt_with_aes_gcm(data['tgt'], tgs_secret_key)
+            tgt_data = json.loads(tgt_json)
+
+            # Check the TGT expiration
+            expiry_time = datetime.datetime.fromisoformat(tgt_data['expiry_time'])
+            if datetime.datetime.now(datetime.timezone.utc) > expiry_time:
+                return self.send_error("TGT has expired.")
+            
+            as_session_key = base64.b64decode(tgt_data['session_key'])
+            principal_name = tgt_data['principal']
+
+        except Exception as e:
+            return self.send_error(f"Failed to decrypt TGT: {e}")
+        
+        # 3. Decrypt the Authenticator
+        try:
+            auth_json = decrypt_with_aes_gcm(data['authenticator'], as_session_key)
+            auth_data = json.loads(auth_json)
+
+            # Check timestamp freshness
+            auth_ts = datetime.datetime.fromisoformat(auth_data['timestamp'].replace("Z", "+00:00"))
+            if abs((datetime.datetime.now(datetime.timezone.utc) - auth_ts).total_seconds()) >TIMESTAMP_WINDOW_SECONDS:
+                return self.send_error("Authenticator timestamp is outside the allowed window (possible replay attack).")
+            
+            # Check if principal in TGT matches principal in Authenticator
+            if auth_data['principal'] != principal_name:
+                return self.send_error("Principal in Authenticator does not match TGT principal.")
+
+            # TODO: Implement a replay cache to prevent reuse of this exact Authenticator
+
+            print("Authenticator verified.")
+
+        except Exception as e:
+            return self.send_error(f"Failed to decrypt Authenticator: {e}")
+
+        # 4. Get requested Service's secret key from DB
+        try:
+            service_principal = data['service_principal']
+            cursor = get_db_conn().cursor()
+            cursor.execute("SELECT secret_key_b64 FROM principals WHERE principal_name = ?", (service_principal,))
+            service_row = cursor.fetchone()
+            if not service_row:
+                return self.send_error(f"Unknown service principal: {service_principal}")
+            
+            service_secret_key = base64.b64decode(service_row['secret_key_b64'])
+        except Exception as e:
+            return self.send_error(f"Failed to retrieve service key: {e}")
+        
+        # --- All Check passe, Generating Service Ticket ---
+        print(f"TGS check passed. Generating Service Ticket for {principal_name} to access {service_principal}")
+        try:
+            # 1. Generate a new Session Key (for Client-Service communication)
+            service_session_key = os.urandom(32) # 32-byte (256-bit) key
+
+            # 2. Create Service Tickert data (for the Service Server)
+            ticket_expiry = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds = SERVICE_TICKET_LIFETIME_SECONDS)
+            service_ticket_data = {
+                "session_key": base64.b64encode(service_session_key).decode('utf-8'),
+                "principal_name": principal_name,
+                "expiry_time": ticket_expiry.isoformat()
+            }
+
+            service_ticket_json = json.dumps(service_ticket_data, sort_keys=True)
+
+            # 3. Encrypt Service Ticket with Service's secret key
+            encrypted_service_ticket = encrypt_with_aes_gcm(service_ticket_json, service_secret_key)
+
+            # 4. Encrypt the new session key with the AS session key (for the client)
+            client_response_data={
+                "service_session_key": base64.b64encode(service_session_key).decode('utf-8'),
+                "service_principal": service_principal,
+                "expiry_time": ticket_expiry.isoformat()
+            }
+
+            client_response_json = json.dumps(client_response_data, sort_keys=True)
+            encrypted_client_response = encrypt_with_aes_gcm(client_response_json, as_session_key)
+
+        except Exception as e:
+            return self.send_error(f"Error generating Service Ticket: {e}")
+        
+        # 5. Send response to client
+        response = {
+            "status": "OK",
+            "message": "TGS request successful",
+            "service_ticket": encrypted_service_ticket,
+            "encrypted_service_session_key": encrypted_client_response
+        }
+
+        self.send_response(response)
+
 
     def send_error(self, message):
         """Sends a JSON error message to the client."""
