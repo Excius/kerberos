@@ -161,7 +161,6 @@ def submit_csr():
             "INSERT INTO certificates (serial_number, subject_name, principal_name, status, expires_at) VALUES (?, ?, ?, ?, ?)",
             (serial, subject_name_str, f"{common_name}@"+REALM,"issued", not_valid_after)
         )
-        # Note: Not committing yet
 
         # Save the new certificate
         cert_filename = f"{common_name.replace(' ', '_')}_{serial}.pem"

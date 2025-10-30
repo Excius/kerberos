@@ -47,7 +47,10 @@ services:
     ports:
       - "5001:5001"
     volumes:
-      - kdc-data-primary:/app/db
+      - ./provisioning_server:/app/provisioning_server
+      - ./kdc_server:/app/kdc_server
+      - kdc-data-primary:/app/db/primary
+      - kdc-data-replica:/app/db/replica
     networks:
       - kerberos-net
     depends_on:

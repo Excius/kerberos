@@ -3,15 +3,15 @@ import sqlite3
 from config.config import REALM, SERVICE_SECRET_KEY_B64, TGS_SECRET_KEY_B64
 
 # Define the path to the database, which will live in the persistent volume
-DB_DIR = "/app/db"
+DB_DIR = "/app/db/primary"
 DB_PATH = os.path.join(DB_DIR, "kdc.db")
 
 # Ensure the DB directory exists
 os.makedirs(DB_DIR, exist_ok=True)
 
-def get_db_conn():
+def get_db_conn(path=DB_PATH):
     """Establishes a connection to the KDC SQLite database."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     return conn
 

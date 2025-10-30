@@ -15,6 +15,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from config.config import REALM, TGT_LIFETIME_SECONDS
+from provisioning_server.main import REPLICA_DB_PATH
 
 
 # We need to import the DB functions from the kdc_server module.
@@ -32,6 +33,8 @@ except ImportError:
 CA_CERT_PATH = "/app/data/ca_cert.pem"
 TIMESTAMP_WINDOW_SECONDS = 300  # 5 minutes
 SERVICE_TICKET_LIFETIME_SECONDS = 300 # 5 minutes
+KDC_PRIMARY_PORT=8888
+KDC_SECONDARY_PORT=8889
 
 # --- Encryption Helpers ---
 
@@ -481,35 +484,34 @@ def start_kdc(role, host='0.0.0.0', port=8888):
         print("Role is PRIMARY. Initializing database...")
         init_kdc_db()
         
-        # Start the TCP server
-        socketserver.TCPServer.allow_reuse_address = True
-        server = ThreadedTCPServer((host, port), KDCRequestHandler)
-        print(f"KDC service listening on {host}:{port}")
-        
-        try:
-            server.serve_forever() # This line blocks and runs the server
-        except KeyboardInterrupt:
-            print("\nKDC service shutting down.")
-            server.shutdown()
-        
     elif role == 'replica':
         # The replica KDC just loads the DB (which is synced by a script)
         print("Role is REPLICA.")
-        # TODO: Implement database sync check
-        # TODO: Start the main KDC listener loop (read-only)
-        
-        # NOTE: This logic will be almost identical to the primary,
-        # but the handler will be in a "read-only" mode.
-        print("Replica service is running (in idle mode for now).")
-        try:
-            while True:
-                time.sleep(3600)
-        except KeyboardInterrupt:
-            print("Replica service shutting down.")
+        # We check if the DB file exists, which implies it has been synced at least once.
+        if not os.path.exists(REPLICA_DB_PATH):
+            print(f"WARNING: Replica database file not found at {REPLICA_DB_PATH}.")
+            print("Waiting for provisioning server to sync...")
+            # The server will still start, but authentication will fail
+            # until the database file is copied into its volume by the
+            # provisioning_server's /sync-replica endpoint.
+        else:
+            print("Replica database file found. Ready to serve read-only requests.")
         
     else:
         print(f"Error: Unknown role '{role}'")
         return
+
+    # Both Primary and Replica run the same listener service
+    socketserver.TCPServer.allow_reuse_address = True
+    server = ThreadedTCPServer((host, port), KDCRequestHandler)
+    print(f"KDC service listening on {host}:{port}")
+    
+    try:
+        server.serve_forever() # This line blocks and runs the server
+    except KeyboardInterrupt:
+        print("\nKDC service shutting down.")
+        server.shutdown()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Kerberos KDC Server")
@@ -523,9 +525,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     if args.role == 'primary':
-        port = 8888
+        port = KDC_PRIMARY_PORT
     elif args.role == 'replica':
-        port = 8889
+        port = KDC_SECONDARY_PORT
     else:
         print(f"Error: Unknown role '{args.role}'")
         sys.exit(1)
