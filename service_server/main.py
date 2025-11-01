@@ -5,14 +5,13 @@ import datetime
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.exceptions import InvalidTag
 
-from config.config import SERVICE_SECRET_KEY_B64
+from config.config import SERVICE_SECRET_KEY_B64, SERVICE_SERVER_PORT, SERVICE_TICKET_LIFETIME_SECONDS
 
 # --- Configuration ---
 # This MUST match the key in kdc_server/database.py
 if( not SERVICE_SECRET_KEY_B64 ):
     raise ValueError("SERVICE_SECRET_KEY_B64 is not set")
 SERVICE_SECRET_KEY = base64.b64decode(SERVICE_SECRET_KEY_B64)
-SERVICE_TICKET_LIFETIME_SECONDS = 300 # 5 minutes, must match KDC
 
 # --- Crypto Helper ---
 
@@ -169,5 +168,5 @@ def start_service(host='0.0.0.0', port=8000):
         server.shutdown()
 
 if __name__ == "__main__":
-    start_service(host='0.0.0.0', port=8000)
+    start_service(host='0.0.0.0', port=SERVICE_SERVER_PORT)
 

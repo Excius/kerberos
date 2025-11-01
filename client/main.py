@@ -15,9 +15,9 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from config.config import REALM
 
 # --- Configuration ---
-CERT_DIR = "/app/certs"
-USER_CERT_PATH = os.path.join(CERT_DIR, "testuser_cert.pem")
-USER_KEY_PATH = os.path.join(CERT_DIR, "testuser_key.pem")
+CERT_DIR = os.path.join(os.getcwd(), "cert")
+USER_CERT_PATH = os.path.join(CERT_DIR, "client.crt")
+USER_KEY_PATH = os.path.join(CERT_DIR, "client.key")
 
 # This is our "ticket cache" - just a file
 TICKET_CACHE_PATH = "/tmp/krb5cc_testuser" 
@@ -25,7 +25,7 @@ TICKET_CACHE_PATH = "/tmp/krb5cc_testuser"
 KDC_HOST = "localhost"
 KDC_PORT = 8888
 SERVICE_HOST = "localhost" # Service Server host
-SERVICE_PORT = 8000             # Service Server port
+SERVICE_PORT = 6000        # Service Server port
 
 USER_PRINCIPAL = f"testuser@{REALM}"
 SERVICE_PRINCIPAL = f"host/service.server@{REALM}" # The service we want to access

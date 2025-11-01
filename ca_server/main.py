@@ -9,17 +9,23 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 import requests
 
 
-from config.config import CA_PASSWORD, CA_PORT, PROVISIONING_SERVER_URL, REALM
+from config.config import CA_COMMON_NAME, CA_ORGANIZATION, CA_PASSWORD, CA_PORT, PROVISIONING_SERVER_URL, REALM
 
 # --- Configuration ---
-DATA_DIR = "/app/data"
-DB_PATH = os.path.join(DATA_DIR, "ca.db")
-CA_KEY_PATH = os.path.join(DATA_DIR, "ca_key.pem")
-CA_CERT_PATH = os.path.join(DATA_DIR, "ca_cert.pem")
-ISSUED_CERTS_DIR = os.path.join(DATA_DIR, "issued_certs")
+CA_DATA_DIR = "/app/data"
+DB_PATH = os.path.join(CA_DATA_DIR, "ca.db")
+CA_KEY_PATH = os.path.join(CA_DATA_DIR, "ca_key.pem")
+CA_CERT_PATH = os.path.join(CA_DATA_DIR, "ca_cert.pem")
+ISSUED_CERTS_DIR = os.path.join(CA_DATA_DIR, "issued_certs")
+
+INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
+if not INTERNAL_API_KEY:
+    print("CRITICAL: INTERNAL_API_KEY environment variable not set.")
+    # In a real app, you'd sys.exit(1) here
+    # For now, we'll just print a warning
 
 # Ensure directories exist
-os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(CA_DATA_DIR, exist_ok=True)
 os.makedirs(ISSUED_CERTS_DIR, exist_ok=True)
 
 app = Flask(__name__)
@@ -73,8 +79,8 @@ def load_or_create_ca():
     subject = issuer = x509.Name([
         x509.NameAttribute(NameOID.COUNTRY_NAME, "IN"),
         x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "Andhra Pradesh"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "MyKerberosProject"),
-        x509.NameAttribute(NameOID.COMMON_NAME, "MyKerberosProject CA"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, CA_ORGANIZATION),
+        x509.NameAttribute(NameOID.COMMON_NAME, CA_COMMON_NAME),
     ])
     
     ca_cert = x509.CertificateBuilder().subject_name(
@@ -111,6 +117,9 @@ def submit_csr():
     csr_pem = request.data
     if not csr_pem:
         return jsonify({"error": "No CSR provided"}), 400
+    
+    if not INTERNAL_API_KEY:
+        return jsonify({"error": "CA server is not configured with an internal API key."}), 500
 
     try:
         csr = x509.load_pem_x509_csr(csr_pem)
@@ -183,7 +192,14 @@ def submit_csr():
                 "cert_fingerprint": fingerprint
             }
             PROVISIONING_SERVER_ROUTE = PROVISIONING_SERVER_URL+"/create-user"
-            res = requests.post(PROVISIONING_SERVER_ROUTE, json=provision_payload, timeout=5)
+
+            # --- NEW: Add the Authorization Header ---
+            headers = {
+                "Authorization": f"Bearer {INTERNAL_API_KEY}",
+                "Content-Type": "application/json"
+            }
+
+            res = requests.post(PROVISIONING_SERVER_ROUTE, json=provision_payload, headers=headers, timeout=5)
             
             if res.status_code in (201, 409):  # 201=Created, 409=Conflict (already exists)
                 provisioning_success = True

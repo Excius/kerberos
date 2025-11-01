@@ -1,5 +1,4 @@
 import argparse
-import time
 import socketserver
 import json
 import base64
@@ -14,7 +13,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from config.config import REALM, TGT_LIFETIME_SECONDS
+from config.config import REALM, SERVICE_TICKET_LIFETIME_SECONDS, TGT_LIFETIME_SECONDS, TIMESTAMP_WINDOW_SECONDS
 from provisioning_server.main import REPLICA_DB_PATH
 
 
@@ -31,10 +30,6 @@ except ImportError:
 
 # --- Configuration ---
 CA_CERT_PATH = "/app/data/ca_cert.pem"
-TIMESTAMP_WINDOW_SECONDS = 300  # 5 minutes
-SERVICE_TICKET_LIFETIME_SECONDS = 300 # 5 minutes
-KDC_PRIMARY_PORT=8888
-KDC_SECONDARY_PORT=8889
 
 # --- Encryption Helpers ---
 
@@ -525,9 +520,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     if args.role == 'primary':
-        port = KDC_PRIMARY_PORT
+        port = 8888
     elif args.role == 'replica':
-        port = KDC_SECONDARY_PORT
+        port = 8888
     else:
         print(f"Error: Unknown role '{args.role}'")
         sys.exit(1)

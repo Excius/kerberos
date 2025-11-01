@@ -12,10 +12,14 @@ services:
     working_dir: /app
     command: python -m ca_server.main
     ports:
-      - "5000:5000" # NOTE: need to remove in production; only for testing
+      - "5000:5000"
     volumes:
       - ./ca_server:/app/ca_server
       - ca-data:/app/data # Persistent volume for DB and certs
+    environment:
+      - PROVISIONING_SERVER_URL=http://provisioning-server:5001
+      - PYTHONUNBUFFERED=1
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
     networks:
       - kerberos-net
 
@@ -29,12 +33,12 @@ services:
       - "8888:8888" # Using a non-standard port for our custom KDC
     volumes:
       - ./kdc_server:/app/kdc_server
-      - kdc-data-primary:/app/db # Persistent volume for the master DB
+      - kdc-data-primary:/app/db/primary # Persistent volume for the master DB
       - ca-data:/app/data # To access the CA's public cert
     networks:
       - kerberos-net
     healthcheck:
-      test: [ "CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('127.0.0.1', 8888))" ]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8888"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -42,7 +46,7 @@ services:
   provisioning-server:
     <<: *kerberos-app # Assuming it's also a Python app
     container_name: provisioning_server
-    working dir: /app
+    working_dir: /app
     command: python -m provisioning_server.main
     ports:
       - "5001:5001"
@@ -53,6 +57,11 @@ services:
       - kdc-data-replica:/app/db/replica
     networks:
       - kerberos-net
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/5001"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     depends_on:
       - primary-kdc
 
@@ -66,12 +75,12 @@ services:
       - "8889:8888"
     volumes:
       - ./kdc_server:/app/kdc_server
-      - kdc-data-replica:/app/db # Separate volume for the replica DB
-      - ca-data:/app/certs
+      - kdc-data-replica:/app/db/replica # Separate volume for the replica DB
+      - ca-data:/app/data
     networks:
       - kerberos-net
     healthcheck:
-      test: [ "CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('127.0.0.1', 8888))" ]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8888"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -80,9 +89,10 @@ services:
   service-server:
     <<: *kerberos-app
     container_name: service_server
-    command: python service_server/main.py
+    working_dir: /app
+    command: python -m service_server.main
     ports:
-      - "9000:9000"
+      - "6000:6000"
     volumes:
       - ./service_server:/app/service_server
     networks:
@@ -92,20 +102,6 @@ services:
         condition: service_healthy
       replica-kdc:
         condition: service_healthy
-
-  # Client - The user's application
-  client:
-    <<: *kerberos-app
-    container_name: client
-    command: python client/main.py
-    volumes:
-      - ./client:/app/client
-      - ca-data:/app/certs
-    networks:
-      - kerberos-net
-    depends_on:
-      service-server:
-        condition: service_started # or a proper healthcheck
 
 # Define named volumes for persistent data
 volumes:

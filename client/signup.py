@@ -1,18 +1,26 @@
 import requests
 import os
-import json
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 # --- Configuration ---
+
+USER_NAME = "testuser"
+
 # This is the directory that client/main.py ALSO uses.
 # It's the mounted 'ca-data' volume.
-CERT_DIR = "/app/certs"
-USER_NAME = "testuser"
-USER_KEY_PATH = os.path.join(CERT_DIR, f"{USER_NAME}_key.pem")
-USER_CERT_PATH = os.path.join(CERT_DIR, f"{USER_NAME}_cert.pem")
+cert_dir = os.path.join(os.getcwd(), "cert")
+# Create it if it doesn't exist
+os.makedirs(cert_dir, exist_ok=True)
+
+
+print(f"Certificate directory: {cert_dir}")
+
+# Example usage (reading or writing files)
+client_cert_path = os.path.join(cert_dir, "client.crt")
+client_key_path = os.path.join(cert_dir, "client.key")
 
 # URL for the CA server (using the internal Docker service name)
 CA_URL = "http://localhost:5000"
@@ -26,10 +34,10 @@ def run_signup():
     print(f"--- Running signup for user: {USER_NAME} ---")
 
     # Check if user key already exists
-    if os.path.exists(USER_KEY_PATH):
-        print(f"Existing key found. Loading key from: {USER_KEY_PATH}")
+    if os.path.exists(client_key_path):
+        print(f"Existing key found. Loading key from: {client_key_path}")
         try:
-            with open(USER_KEY_PATH, "rb") as f:
+            with open(client_key_path, "rb") as f:
                 key = serialization.load_pem_private_key(
                     f.read(),
                     password=None # Assuming no password
@@ -47,8 +55,8 @@ def run_signup():
 
         # 2. Save the private key (THEY KEEP THIS SECRET)
         # We save it directly to the shared volume path
-        print(f"Saving new private key to: {USER_KEY_PATH}")
-        with open(USER_KEY_PATH, "wb") as f:
+        print(f"Saving new private key to: {client_key_path}")
+        with open(client_key_path, "wb") as f:
             f.write(key.private_bytes(
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PrivateFormat.PKCS8,
@@ -82,10 +90,10 @@ def run_signup():
             # 5. Receive the signed certificate and save it
             # This will OVERWRITE any existing certificate
             data = response.json()
-            with open(USER_CERT_PATH, "wb") as f:
+            with open(client_cert_path, "wb") as f:
                 f.write(data['certificate'].encode('utf-8'))
             
-            print(f"Success! Received and saved/overwritten certificate to: {USER_CERT_PATH}")
+            print(f"Success! Received and saved/overwritten certificate to: {client_cert_path}")
             print(f"User provisioned: {data.get('principal_name')}")
         else:
             print(f"Error: {response.status_code}")
