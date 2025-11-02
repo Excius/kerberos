@@ -3,6 +3,10 @@ x-kerberos-app: &kerberos-app
     context: .
     dockerfile: Dockerfile
   image: kerberos-project-app
+  environment:
+    - PYTHONPATH=/app
+  volumes:
+    - ./config:/app/config
 
 services:
   # Certificate Authority - The trusted ID issuer
@@ -17,11 +21,18 @@ services:
       - ./ca_server:/app/ca_server
       - ca-data:/app/data # Persistent volume for DB and certs
     environment:
+      - PYTHONPATH=/app
       - PROVISIONING_SERVER_URL=http://provisioning-server:5001
       - PYTHONUNBUFFERED=1
       - INTERNAL_API_KEY=${INTERNAL_API_KEY}
     networks:
       - kerberos-net
+    healthcheck:
+      test: [ "CMD-SHELL", "python -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1', 5000))\" || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
   # Primary KDC - The main authentication hub
   primary-kdc:
@@ -34,14 +45,20 @@ services:
     volumes:
       - ./kdc_server:/app/kdc_server
       - kdc-data-primary:/app/db/primary # Persistent volume for the master DB
-      - ca-data:/app/data # To access the CA's public cert
+      - ca-data:/app/data:ro # Read only access to CA's public cert
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
     networks:
       - kerberos-net
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8888"]
+      test: [ "CMD-SHELL", "python -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1', 8888))\" || exit 1" ]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 5
+      start_period: 5s
+    depends_on:
+      - ca-server # Needs CA cert to be generated
 
   provisioning-server:
     <<: *kerberos-app # Assuming it's also a Python app
@@ -55,15 +72,22 @@ services:
       - ./kdc_server:/app/kdc_server
       - kdc-data-primary:/app/db/primary
       - kdc-data-replica:/app/db/replica
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
     networks:
       - kerberos-net
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/5001"]
+      test: [ "CMD-SHELL", "python -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1', 5001))\" || exit 1" ]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 5
+      start_period: 5s
     depends_on:
-      - primary-kdc
+      primary-kdc:
+        # Must wait for the primary KDC to init its DB
+        condition: service_healthy
 
   # Replica KDC - The backup for high availability
   replica-kdc:
@@ -76,14 +100,21 @@ services:
     volumes:
       - ./kdc_server:/app/kdc_server
       - kdc-data-replica:/app/db/replica # Separate volume for the replica DB
-      - ca-data:/app/data
+      - ca-data:/app/data:ro
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
     networks:
       - kerberos-net
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8888"]
+      test: [ "CMD-SHELL", "python -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1', 8888))\" || exit 1" ]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 5
+      start_period: 10s # Give it time to wait for primary
+    depends_on:
+      primary-kdc:
+        condition: service_healthy
 
   # Service Server - The protected application
   service-server:
@@ -95,8 +126,17 @@ services:
       - "6000:6000"
     volumes:
       - ./service_server:/app/service_server
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
     networks:
       - kerberos-net
+    healthcheck:
+      test: [ "CMD-SHELL", "python -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1', 6000))\" || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
     depends_on:
       primary-kdc:
         condition: service_healthy
