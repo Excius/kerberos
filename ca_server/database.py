@@ -8,10 +8,14 @@ DB_PATH = os.path.join(CA_DATA_DIR, "ca.db")
 # Ensure the data directory exists
 os.makedirs(CA_DATA_DIR, exist_ok=True)
 
+
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10, isolation_level=None)
     conn.row_factory = sqlite3.Row
+    # WAL mode enables concurrent reads/writes safely
+    conn.execute("PRAGMA journal_mode=WAL;")
     return conn
+
 
 def init_db():
     """Initializes the CA's private database."""
@@ -23,13 +27,13 @@ def init_db():
             serial_number INTEGER PRIMARY KEY,
             subject_name TEXT NOT NULL,
             principal_name TEXT NOT NULL,
-            status TEXT NOT NULL,  -- 'trusted', 'revoked'
+            status TEXT NOT NULL,  -- 'trusted', 'pending', 'revoked'
             issued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             expires_at TIMESTAMP NOT NULL,
             fingerprint TEXT NOT NULL UNIQUE
         );
         """)
-        
+
         # This table tracks pending requests for new devices
         conn.execute("""
         CREATE TABLE IF NOT EXISTS pending_requests (
@@ -37,6 +41,7 @@ def init_db():
             principal_name TEXT NOT NULL,
             new_csr_pem TEXT NOT NULL,
             new_cert_subject TEXT NOT NULL,
+            fingerprint TEXT NOT NULL UNIQUE,
             status TEXT NOT NULL DEFAULT 'pending', -- 'pending', 'approved'
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
