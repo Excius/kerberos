@@ -21,7 +21,7 @@ from provisioning_server.main import REPLICA_DB_PATH
 # This adds the parent directory to the Python path so we can import 'kdc_server'
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 try:
-    from kdc_server.database import init_kdc_db, get_db_conn
+    from kdc_server.database import init_kdc_db, get_db_conn, DB_PATH
 except ImportError:
     print("Error: Could not import from 'kdc_server.database'.")
     print("Make sure 'kdc_server/database.py' exists.")
@@ -198,29 +198,26 @@ class KDCRequestHandler(socketserver.BaseRequestHandler):
         try:
             cert_fingerprint = client_cert.fingerprint(hashes.SHA256()).hex()
             
-            conn = get_db_conn()
+            conn = get_db_conn(self.db_path)
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM principals WHERE auth_type = 'pkinit' AND cert_fingerprint = ?",
+                """
+                SELECT u.principal_name 
+                FROM devices d
+                JOIN users u ON d.user_id = u.user_id
+                WHERE d.cert_fingerprint = ? AND d.status = 'trusted'
+                """,
                 (cert_fingerprint,)
             )
             principal_row = cursor.fetchone()
             
             if not principal_row:
-                # fallback: try matching subject string (less preferred)
-                cert_subject_str = client_cert.subject.rfc4514_string()
-                cursor.execute(
-                    "SELECT * FROM principals WHERE auth_type = 'pkinit' AND cert_subject = ?",
-                    (cert_subject_str,)
-                )
-                principal_row = cursor.fetchone()
-
-                if not principal_row:
-                    conn.close()
-                    return self.send_error("Unknown principal for presented certificate.")
-                
-            # Fetch TGS secret key
-            cursor.execute("SELECT secret_key_b64 FROM principals WHERE principal_name = ?", (f"tgs@{REALM}",))
+                return self.send_error("Unknown or untrusted device for presented certificate.")
+            
+            principal_name = principal_row['principal_name']
+            
+            # Fetch TGS secret key from the new table
+            cursor.execute(f"SELECT secret_key_b64 FROM service_keys WHERE principal_name = 'tgs@{REALM}'")
             tgs_row = cursor.fetchone()
             conn.close()
             
@@ -266,7 +263,7 @@ class KDCRequestHandler(socketserver.BaseRequestHandler):
             cert_principal = cert_cn_attr[0].value if cert_cn_attr else None
 
             # Verify principal matches cert binding or DB canonical name
-            if data["principal"] != principal_row['principal_name'] and data["principal"] != cert_principal:
+            if data["principal"] != principal_name and data["principal"] != cert_principal:
                 return self.send_error("Principal name does not match certificate or registered principal.")
 
             # Timestamp check (ISO parsing + timezone)
@@ -310,7 +307,6 @@ class KDCRequestHandler(socketserver.BaseRequestHandler):
 
             # Encrypt TGT data with TGS secret key
             encrypted_tgt = encrypt_with_aes_gcm(tgt_data_json, tgs_secret_key)
-
             # Encrypt Session Key with client's public key
             encrypted_session_key = encrypt_with_public_key(session_key, client_public_key)
         except Exception as e:
@@ -344,9 +340,11 @@ class KDCRequestHandler(socketserver.BaseRequestHandler):
 
         # 1. Get TGS secret key from DB
         try:
-            cursor = get_db_conn().cursor()
-            cursor.execute("SELECT secret_key_b64 FROM principals WHERE principal_name =?", (f"tgs@{REALM}",))
+            conn = get_db_conn(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT secret_key_b64 FROM service_keys WHERE principal_name = 'tgs@{REALM}'")
             tgs_row = cursor.fetchone()
+            conn.close()
             if not tgs_row:
                 return self.send_error("KDC misconfigured: TGS principal not found.")
             tgs_secret_key = base64.b64decode(tgs_row['secret_key_b64'])
@@ -364,7 +362,7 @@ class KDCRequestHandler(socketserver.BaseRequestHandler):
                 return self.send_error("TGT has expired.")
             
             as_session_key = base64.b64decode(tgt_data['session_key'])
-            principal_name = tgt_data['principal']
+            principal_from_tgt = tgt_data['principal']
 
         except Exception as e:
             return self.send_error(f"Failed to decrypt TGT: {e}")
@@ -380,7 +378,7 @@ class KDCRequestHandler(socketserver.BaseRequestHandler):
                 return self.send_error("Authenticator timestamp is outside the allowed window (possible replay attack).")
             
             # Check if principal in TGT matches principal in Authenticator
-            if auth_data['principal'] != principal_name:
+            if auth_data['principal'] != principal_from_tgt:
                 return self.send_error("Principal in Authenticator does not match TGT principal.")
 
             # TODO: Implement a replay cache to prevent reuse of this exact Authenticator
@@ -393,18 +391,21 @@ class KDCRequestHandler(socketserver.BaseRequestHandler):
         # 4. Get requested Service's secret key from DB
         try:
             service_principal = data['service_principal']
-            cursor = get_db_conn().cursor()
-            cursor.execute("SELECT secret_key_b64 FROM principals WHERE principal_name = ?", (service_principal,))
+            conn = get_db_conn(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT secret_key_b64 FROM service_keys WHERE principal_name = ?", (service_principal,))
             service_row = cursor.fetchone()
+            conn.close()
+            
             if not service_row:
                 return self.send_error(f"Unknown service principal: {service_principal}")
-            
             service_secret_key = base64.b64decode(service_row['secret_key_b64'])
+
         except Exception as e:
             return self.send_error(f"Failed to retrieve service key: {e}")
         
         # --- All Check passe, Generating Service Ticket ---
-        print(f"TGS check passed. Generating Service Ticket for {principal_name} to access {service_principal}")
+        print(f"TGS check passed. Generating Service Ticket for {principal_from_tgt} to access {service_principal}")
         try:
             # 1. Generate a new Session Key (for Client-Service communication)
             service_session_key = os.urandom(32) # 32-byte (256-bit) key
@@ -413,7 +414,7 @@ class KDCRequestHandler(socketserver.BaseRequestHandler):
             ticket_expiry = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds = SERVICE_TICKET_LIFETIME_SECONDS)
             service_ticket_data = {
                 "session_key": base64.b64encode(service_session_key).decode('utf-8'),
-                "principal_name": principal_name,
+                "principal_name": principal_from_tgt,
                 "expiry_time": ticket_expiry.isoformat()
             }
 
@@ -438,7 +439,6 @@ class KDCRequestHandler(socketserver.BaseRequestHandler):
         # 5. Send response to client
         response = {
             "status": "OK",
-            "message": "TGS request successful",
             "service_ticket": encrypted_service_ticket,
             "encrypted_service_session_key": encrypted_client_response
         }
@@ -478,13 +478,15 @@ def start_kdc(role, host='0.0.0.0', port=8888):
         # The primary KDC is responsible for initializing the database
         print("Role is PRIMARY. Initializing database...")
         init_kdc_db()
+        db_path = DB_PATH
         
     elif role == 'replica':
         # The replica KDC just loads the DB (which is synced by a script)
         print("Role is REPLICA.")
+        db_path = REPLICA_DB_PATH
         # We check if the DB file exists, which implies it has been synced at least once.
-        if not os.path.exists(REPLICA_DB_PATH):
-            print(f"WARNING: Replica database file not found at {REPLICA_DB_PATH}.")
+        if not os.path.exists(db_path):
+            print(f"WARNING: Replica database file not found at {db_path}.")
             print("Waiting for provisioning server to sync...")
             # The server will still start, but authentication will fail
             # until the database file is copied into its volume by the
@@ -495,6 +497,9 @@ def start_kdc(role, host='0.0.0.0', port=8888):
     else:
         print(f"Error: Unknown role '{role}'")
         return
+
+    # Set the db_path for the handler
+    KDCRequestHandler.db_path = db_path
 
     # Both Primary and Replica run the same listener service
     socketserver.TCPServer.allow_reuse_address = True

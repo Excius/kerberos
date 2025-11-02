@@ -79,9 +79,9 @@ def sync_replica_internal():
         return message
     
 
-@app.route('/create-user', methods=['POST'])
+@app.route('/provision-new-user', methods=['POST'])
 @require_api_key
-def create_user():
+def provision_new_user():
     """
     API endpoint to create a new user principal in the KDC database.
     This should be called by your signup logic (e.g., from the CA server)
@@ -106,40 +106,38 @@ def create_user():
     
     conn = None
     try:
-        conn = get_db_conn()
+        conn = get_primary_db_conn()
         cursor = conn.cursor()
         
-        # Insert the new user, linking them to their certificate subject
-        # for 'pkinit' (certificate-based) authentication.
+        # 1. Create the master user account
+        cursor.execute(
+            "INSERT INTO users (principal_name) VALUES (?)",
+            (principal_name,)
+        )
+        user_id = cursor.lastrowid
+
+        # 2. Add their first trusted device
         cursor.execute(
             """
-            INSERT INTO principals (principal_name, auth_type, cert_subject, cert_fingerprint, secret_key_b64)
-            VALUES (?, 'pkinit', ?, ?, NULL)
+            INSERT INTO devices (user_id, cert_fingerprint, cert_subject, status)
+            VALUES (?, ?, ?, 'trusted')
             """,
-            (principal_name, cert_subject, cert_fingerprint)
+            (user_id, cert_fingerprint, cert_subject)
         )
         conn.commit()
         
-        print(f"Successfully provisioned principal: {principal_name}")
-
-        # After a successful user creation, trigger a sync
-        # In a real system, this might be asynchronous
-        sync_status = sync_replica_internal()
-        print(f"Replica sync status: {sync_status}")
-
-
+        print(f"Successfully provisioned NEW user: {principal_name} (UserID: {user_id})")
+        sync_status = sync_replica_internal() # Sync after write
+        
         return jsonify({
-            "message": "User principal created successfully",
+            "message": f"New user and first device provisioned. {sync_status}",
             "principal_name": principal_name,
+            "user_id": user_id
         }), 201
 
     except sqlite3.IntegrityError as e:
-        # This will happen if the principal_name or cert_subject already exists
-        print(f"Error provisioning user (IntegrityError): {e}")
-        return jsonify({
-            "error": "Principal or certificate subject already exists",
-            "details": str(e)
-        }), 409 # 409 Conflict
+        print(f"Error provisioning new user (IntegrityError): {e}")
+        return jsonify({"error": "User principal or device fingerprint already exists"}), 409
     except Exception as e:
         print(f"Internal server error: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
@@ -147,13 +145,70 @@ def create_user():
         if conn:
             conn.close()
 
-@app.route("/sync-replica", methods=['POST'])
+@app.route('/add-device', methods=['POST'])
+@require_api_key
+def add_device():
+    """
+    Adds a new trusted device to an EXISTING user.
+    This is called by the CA *after* an existing device has approved it.
+    """
+    data = request.get_json(silent=True) or {}
+    principal_name = data.get('principal_name')
+    cert_subject = data.get('cert_subject')
+    cert_fingerprint = data.get('cert_fingerprint')
+
+    if not principal_name or not cert_subject or not cert_fingerprint:
+        return jsonify({"error": "principal_name, cert_subject, and cert_fingerprint are required"}), 400
+    
+    conn = None
+    try:
+        conn = get_primary_db_conn()
+        cursor = conn.cursor()
+        
+        # 1. Find the existing user's ID
+        cursor.execute(
+            "SELECT user_id FROM users WHERE principal_name = ?", (principal_name,)
+        )
+        user_row = cursor.fetchone()
+        
+        if not user_row:
+            return jsonify({"error": "User not found"}), 404
+            
+        user_id = user_row['user_id']
+        
+        # 2. Add the new trusted device
+        cursor.execute(
+            """
+            INSERT INTO devices (user_id, cert_fingerprint, cert_subject, status)
+            VALUES (?, ?, ?, 'trusted')
+            """,
+            (user_id, cert_fingerprint, cert_subject)
+        )
+        conn.commit()
+        
+        print(f"Successfully added new device to user: {principal_name}")
+        sync_status = sync_replica_internal() # Sync after write
+        
+        return jsonify({
+            "message": f"New device added successfully. {sync_status}",
+            "principal_name": principal_name,
+            "user_id": user_id
+        }), 201
+
+    except sqlite3.IntegrityError as e:
+        print(f"Error adding device (IntegrityError): {e}")
+        return jsonify({"error": "Device fingerprint already exists"}), 409
+    except Exception as e:
+        print(f"Internal server error: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+@app.route('/sync-replica', methods=['POST'])
 @require_api_key
 def sync_replica_endpoint():
-    """
-    Manually triggers a sync by copying the primary DB to the replica's volume.
-    This endpoint can be called by an admin or a cron job.
-    """
+    """Manually triggers a sync."""
     print("Received manual sync request...")
     try:
         message = sync_replica_internal()
@@ -161,14 +216,11 @@ def sync_replica_endpoint():
     except Exception as e:
         print(f"Error during replica sync: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
-    
 
 if __name__ == '__main__':
-    print("--- Starting Provisioning API Server ---")
-    
-    # Note: The 'primary-kdc' container must run first
-    # to call 'init_kdc_db()' and create the database file.
-    
-    # Run the Flask server, making it accessible within the Docker network
+    print("--- Starting Provisioning API Server (Multi-Device) ---")
+    if not os.path.exists(PRIMARY_DB_PATH):
+        print(f"Warning: Primary DB {PRIMARY_DB_PATH} not found.")
     app.run(host='0.0.0.0', port=PROVISIONING_SERVER_PORT)
+
 
