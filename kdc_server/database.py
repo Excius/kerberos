@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from config.config import REALM, SERVICE_SECRET_KEY_B64, TGS_SECRET_KEY_B64
+from config.config import REALM, SERVICE_SECRET_KEY_B64, SERVICE_SERVER_DOMAIN, SERVICE_SERVER_PORT, TGS_SECRET_KEY_B64
 
 # Define the path to the database, which will live in the persistent volume
 DB_DIR = "/app/db/primary"
@@ -52,17 +52,41 @@ def init_kdc_db():
         );
         """)
         
+        # 4. 'services' table for service metadata
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS services (
+            service_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            principal_name TEXT UNIQUE NOT NULL,
+            service_name TEXT NOT NULL,
+            service_url TEXT,
+            description TEXT,
+            FOREIGN KEY (principal_name) REFERENCES service_keys (principal_name)
+        );
+        """)
+        
         # Insert the TGS principal
         cursor.execute("""
         INSERT OR IGNORE INTO service_keys (principal_name, secret_key_b64)
         VALUES (?, ?)
         """, (f"tgs@{REALM}", TGS_SECRET_KEY_B64,))
         
+        # Insert the TGS service metadata
+        cursor.execute("""
+        INSERT OR IGNORE INTO services (principal_name, service_name, service_url, description)
+        VALUES (?, ?, ?, ?)
+        """, (f"tgs@{REALM}", "Ticket Granting Service", None, "Internal Kerberos ticket granting service"))
+        
         # Insert the Service Server principal
         cursor.execute("""
         INSERT OR IGNORE INTO service_keys (principal_name, secret_key_b64)
         VALUES (?, ?)
         """, (f"host/service.server@{REALM}", SERVICE_SECRET_KEY_B64,))
+        
+        # Insert the Service Server metadata
+        cursor.execute("""
+        INSERT OR IGNORE INTO services (principal_name, service_name, service_url, description)
+        VALUES (?, ?, ?, ?)
+        """, (f"host/service.server@{REALM}", "Service Server 1", f"{SERVICE_SERVER_DOMAIN}:{SERVICE_SERVER_PORT}", "Protected application server"))
         
         conn.commit()
         print("KDC multi-device database initialized successfully.")

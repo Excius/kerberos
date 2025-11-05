@@ -2,3 +2,4 @@ cryptography
 flask
 requests
 python-dotenv
+websockets

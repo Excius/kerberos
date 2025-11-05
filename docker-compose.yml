@@ -52,9 +52,9 @@ services:
     networks:
       - kerberos-net
     healthcheck:
-      test: [ "CMD-SHELL", "python -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1', 8888))\" || exit 1" ]
+      test: [ "CMD", "python", "kdc_server/healthcheck.py" ]
       interval: 10s
-      timeout: 5s
+      timeout: 10s
       retries: 5
       start_period: 5s
     depends_on:
@@ -107,9 +107,9 @@ services:
     networks:
       - kerberos-net
     healthcheck:
-      test: [ "CMD-SHELL", "python -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1', 8888))\" || exit 1" ]
+      test: [ "CMD", "python", "kdc_server/healthcheck.py" ]
       interval: 10s
-      timeout: 5s
+      timeout: 10s
       retries: 5
       start_period: 10s # Give it time to wait for primary
     depends_on:
@@ -123,7 +123,7 @@ services:
     working_dir: /app
     command: python -m service_server.main
     ports:
-      - "6000:6000"
+      - "6001:6001"
     volumes:
       - ./service_server:/app/service_server
     environment:
@@ -131,12 +131,6 @@ services:
       - PYTHONUNBUFFERED=1
     networks:
       - kerberos-net
-    healthcheck:
-      test: [ "CMD-SHELL", "python -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1', 6000))\" || exit 1" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
     depends_on:
       primary-kdc:
         condition: service_healthy

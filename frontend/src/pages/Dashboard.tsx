@@ -1,150 +1,20 @@
-import { useState, useEffect, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
-import { useAuth } from "../hooks/useAuth";
+import { useDashboard } from "../hooks/useDashboard";
+import { useService } from "../hooks/useService";
 import { Bell, LogOut, X, Check } from "lucide-react";
-
-const CA_URL = (import.meta as unknown as { env?: Record<string, string> }).env
-  ?.VITE_CA_URL;
-
-interface PendingRequest {
-  request_id: string;
-  new_cert_subject: string;
-  created_at: string;
-}
+import { useNavigate } from "react-router-dom";
 
 export default function Dashboard() {
-  const { user, keyPair, logout } = useAuth();
+  const {
+    user,
+    pendingRequests,
+    showNotifications,
+    setShowNotifications,
+    approveRequest,
+    rejectRequest,
+    handleLogout,
+  } = useDashboard();
+  const { tgtObtained, services, serviceKeys, getTGT } = useService();
   const navigate = useNavigate();
-  const [pendingRequests, setPendingRequests] = useState<PendingRequest[]>([]);
-  const [showNotifications, setShowNotifications] = useState(false);
-
-  const pollPendingRequests = useCallback(async () => {
-    if (!user || !keyPair || !CA_URL) return;
-
-    const timestamp = new Date().toISOString();
-    const data = new TextEncoder().encode(timestamp);
-    const signature = await window.crypto.subtle.sign(
-      { name: "RSASSA-PKCS1-v1_5" },
-      keyPair.privateKey,
-      data
-    );
-    const signatureB64 = btoa(
-      String.fromCharCode(...new Uint8Array(signature))
-    );
-
-    const resp = await fetch(`${CA_URL}/poll-pending-requests`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Client-Cert": btoa(user.certificate),
-        "X-Client-Signature": signatureB64,
-        "X-Client-Timestamp": timestamp,
-      },
-    });
-
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data.pending_requests) {
-        setPendingRequests(data.pending_requests);
-      }
-    }
-  }, [user, keyPair]);
-
-  const approveRequest = async (requestId: string) => {
-    if (!user || !keyPair || !CA_URL) return;
-
-    const timestamp = new Date().toISOString();
-    const data = new TextEncoder().encode(timestamp);
-    const signature = await window.crypto.subtle.sign(
-      { name: "RSASSA-PKCS1-v1_5" },
-      keyPair.privateKey,
-      data
-    );
-    const signatureB64 = btoa(
-      String.fromCharCode(...new Uint8Array(signature))
-    );
-
-    const resp = await fetch(`${CA_URL}/approve-request`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Client-Cert": btoa(user.certificate),
-        "X-Client-Signature": signatureB64,
-        "X-Client-Timestamp": timestamp,
-      },
-      body: JSON.stringify({ request_id: requestId }),
-    });
-
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data.status === "approved") {
-        setPendingRequests((prev) =>
-          prev.filter((r) => r.request_id !== requestId)
-        );
-      }
-    } else {
-      const errorData = await resp.json().catch(() => ({}));
-      alert(errorData.error || "Failed to approve request");
-    }
-  };
-
-  const rejectRequest = async (requestId: string) => {
-    if (!user || !keyPair || !CA_URL) return;
-
-    const timestamp = new Date().toISOString();
-    const data = new TextEncoder().encode(timestamp);
-    const signature = await window.crypto.subtle.sign(
-      { name: "RSASSA-PKCS1-v1_5" },
-      keyPair.privateKey,
-      data
-    );
-    const signatureB64 = btoa(
-      String.fromCharCode(...new Uint8Array(signature))
-    );
-
-    const resp = await fetch(`${CA_URL}/approve-request`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Client-Cert": btoa(user.certificate),
-        "X-Client-Signature": signatureB64,
-        "X-Client-Timestamp": timestamp,
-      },
-      body: JSON.stringify({ request_id: requestId, action: "reject" }),
-    });
-
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data.status === "rejected") {
-        setPendingRequests((prev) =>
-          prev.filter((r) => r.request_id !== requestId)
-        );
-      }
-    } else {
-      const errorData = await resp.json().catch(() => ({}));
-      alert(errorData.error || "Failed to reject request");
-    }
-  };
-
-  useEffect(() => {
-    if (!user) {
-      navigate("/login");
-      return;
-    }
-
-    // Initial poll
-    pollPendingRequests();
-
-    // Poll every 30 seconds
-    const interval = setInterval(pollPendingRequests, 30000);
-
-    return () => clearInterval(interval);
-  }, [user, navigate, pollPendingRequests]);
-
-  const handleLogout = () => {
-    logout();
-    navigate("/login");
-  };
 
   return (
     <div className="min-h-screen bg-linear-to-br from-slate-50 via-blue-50 to-slate-100">
@@ -208,19 +78,25 @@ export default function Dashboard() {
                                   {request.new_cert_subject}
                                 </p>
                                 <p className="text-xs text-gray-500 mt-1">
-                                  {new Date(request.created_at).toLocaleString()}
+                                  {new Date(
+                                    request.created_at
+                                  ).toLocaleString()}
                                 </p>
                               </div>
                               <div className="flex space-x-2 ml-4">
                                 <button
-                                  onClick={() => approveRequest(request.request_id)}
+                                  onClick={() =>
+                                    approveRequest(request.request_id)
+                                  }
                                   className="flex items-center space-x-1 px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-xs rounded transition-colors"
                                 >
                                   <Check className="w-3 h-3" />
                                   <span>Approve</span>
                                 </button>
                                 <button
-                                  onClick={() => rejectRequest(request.request_id)}
+                                  onClick={() =>
+                                    rejectRequest(request.request_id)
+                                  }
                                   className="flex items-center space-x-1 px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-xs rounded transition-colors"
                                 >
                                   <X className="w-3 h-3" />
@@ -256,6 +132,54 @@ export default function Dashboard() {
             <p className="text-gray-600 text-lg">
               Welcome to your secure dashboard, {user?.username}!
             </p>
+            <div className="mt-6 mb-6">
+              <button
+                onClick={getTGT}
+                className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors duration-200 transform hover:scale-105 active:scale-95 shadow-md hover:shadow-lg mr-4"
+              >
+                Get TGT
+              </button>
+              {tgtObtained && (
+                <span className="text-green-600 font-semibold">
+                  TGT Obtained!
+                </span>
+              )}
+              {services.length > 0 && (
+                <div className="mt-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                    Available Services:
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {services.map((service, index) => (
+                      <div
+                        key={index}
+                        className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow cursor-pointer"
+                        onClick={() =>
+                          navigate(
+                            `/service/${encodeURIComponent(service.name)}`
+                          )
+                        }
+                      >
+                        <h4 className="text-md font-semibold text-blue-600 hover:text-blue-700 mb-2">
+                          {service.name}
+                        </h4>
+                        <p className="text-sm text-gray-600 mb-2">
+                          {service.description}
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          URL: {service.url}
+                        </p>
+                        {serviceKeys[service.name] && (
+                          <p className="text-xs text-green-600 mt-2 font-medium">
+                            Connected
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
             <div className="mt-8 p-6 bg-blue-50 border border-blue-200 rounded-lg">
               <h2 className="text-lg font-semibold text-blue-900 mb-2">
                 Certificate-Based Authentication Active
