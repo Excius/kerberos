@@ -5,6 +5,8 @@ import os
 import datetime
 import time
 import sys
+import asyncio
+import websockets
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
@@ -16,7 +18,7 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 try:
     from config.config import (
-        REALM, KDC_PORT, KDC_PRIMARY_PORT, KDC_REPLICA_PORT, SERVICE_PORT
+        REALM, KDC_PORT, KDC_PRIMARY_PORT, KDC_REPLICA_PORT, SERVICE_SERVER_PORT
     )
 except ImportError:
     print("Error: config/config.py not found. Please create it.")
@@ -24,7 +26,7 @@ except ImportError:
     KDC_PORT = 8888
     KDC_PRIMARY_PORT = 8888
     KDC_REPLICA_PORT = 8889
-    SERVICE_PORT = 6000
+    SERVICE_SERVER_PORT = 6000
 
 # Local paths for credentials (to be run from host)
 CERT_DIR = os.path.join(os.getcwd(), "cert")
@@ -105,7 +107,7 @@ def decrypt_with_aes_gcm(ciphertext_b64, key):
 # --- Socket Helper ---
 
 def send_and_recv(host, port, request_data):
-    """Helper function to connect, send, and receive a response."""
+    """Helper function to connect, send, and receive a response via TCP."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(5.0) # Set a timeout
         sock.connect((host, port))
@@ -116,9 +118,21 @@ def send_and_recv(host, port, request_data):
             return None
         return json.loads(response_raw.decode('utf-8'))
 
+async def send_and_recv_ws(host, port, request_data):
+    """Helper function to connect, send, and receive a response via WebSocket."""
+    uri = f"ws://{host}:{port}"
+    try:
+        async with websockets.connect(uri) as websocket:
+            await websocket.send(json.dumps(request_data))
+            response_str = await websocket.recv()
+            return json.loads(response_str)
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        return None
+
 # --- Kerberos Steps ---
 
-def request_tgt(client_cert, client_cert_pem, client_key, kdc_host, kdc_port):
+async def request_tgt(client_cert, client_cert_pem, client_key, kdc_host, kdc_port):
     """
     Performs the AS_REQ to get a Ticket-Granting Ticket (TGT).
     """
@@ -139,7 +153,7 @@ def request_tgt(client_cert, client_cert_pem, client_key, kdc_host, kdc_port):
     }
     
     print(f"Connecting to KDC at {kdc_host}:{kdc_port}...")
-    response = send_and_recv(kdc_host, kdc_port, request_data)
+    response = await send_and_recv_ws(kdc_host, kdc_port, request_data)
     if not response:
         return False
 
@@ -161,7 +175,7 @@ def request_tgt(client_cert, client_cert_pem, client_key, kdc_host, kdc_port):
         print(f"Authentication failed: {response.get('message')}")
         return False
 
-def request_service_ticket(kdc_host, kdc_port):
+async def request_service_ticket(kdc_host, kdc_port):
     """
     Performs the TGS_REQ to get a Service Ticket.
     """
@@ -188,7 +202,7 @@ def request_service_ticket(kdc_host, kdc_port):
     }
     
     print(f"Connecting to KDC at {kdc_host}:{kdc_port}...")
-    response = send_and_recv(kdc_host, kdc_port, tgs_req_data)
+    response = await send_and_recv_ws(kdc_host, kdc_port, tgs_req_data)
     if not response:
         return False
 
@@ -210,7 +224,7 @@ def request_service_ticket(kdc_host, kdc_port):
         print(f"TGS request failed: {response.get('message')}")
         return False
 
-def access_service():
+async def access_service():
     """
     Performs the AP_REQ to access the protected service.
     """
@@ -236,8 +250,8 @@ def access_service():
     }
     
     try:
-        print(f"Connecting to Service Server at {SERVICE_HOST}:{SERVICE_PORT}...")
-        response = send_and_recv(SERVICE_HOST, SERVICE_PORT, ap_req_data)
+        print(f"Connecting to Service Server at {SERVICE_HOST}:{SERVICE_SERVER_PORT}...")
+        response = await send_and_recv_ws(SERVICE_HOST, SERVICE_SERVER_PORT, ap_req_data)
         if not response:
             return False
             
@@ -253,13 +267,35 @@ def access_service():
             return False
             
     except ConnectionRefusedError:
-        print(f"Error: Connection refused. Is 'service-server' running at {SERVICE_HOST}:{SERVICE_PORT}?")
+        print(f"Error: Connection refused. Is 'service-server' running at {SERVICE_HOST}:{SERVICE_SERVER_PORT}?")
         return False
     except Exception as e:
         print(f"An error occurred during AP_REQ: {e}")
         return False
 
-def run_full_flow(kdc_host, kdc_port):
+async def request_service_list(kdc_host, kdc_port):
+    """
+    Requests the list of available services from the KDC.
+    """
+    print(f"\n--- Requesting Service List from {kdc_host}:{kdc_port} ---")
+    
+    request_data = {"type": "LIST_SERVICES"}
+    
+    response = await send_and_recv_ws(kdc_host, kdc_port, request_data)
+    if response and response.get('status') == 'OK':
+        services = response.get('services', [])
+        print("Available services:")
+        for service in services:
+            name = service.get("name", "Unknown")
+            url = service.get("url", "N/A")
+            desc = service.get("description", "No description")
+            print(f"  - {name}: {desc} (URL: {url})")
+        return services
+    else:
+        print(f"Failed to list services: {response}")
+        return []
+
+async def run_full_flow(kdc_host, kdc_port):
     """Runs the complete AS -> TGS -> AP flow against a specific KDC."""
     
     # 0. Load credentials
@@ -270,17 +306,23 @@ def run_full_flow(kdc_host, kdc_port):
         return False
     
     # 1. Perform AS_REQ
-    if not request_tgt(client_cert, client_cert_pem, client_key, kdc_host, kdc_port):
+    if not await request_tgt(client_cert, client_cert_pem, client_key, kdc_host, kdc_port):
         print("Halting due to AS_REQ failure.")
         return False
 
+    # List available services
+    services = await request_service_list(kdc_host, kdc_port)
+    if not services:
+        print("No services available.")
+        return False
+
     # 2. Perform TGS_REQ
-    if not request_service_ticket(kdc_host, kdc_port):
+    if not await request_service_ticket(kdc_host, kdc_port):
         print("Halting due to TGS_REQ failure.")
         return False
         
     # 3. Perform AP_REQ
-    if not access_service():
+    if not await access_service():
         print("Halting due to AP_REQ failure.")
         return False
         
@@ -314,7 +356,7 @@ if __name__ == "__main__":
     print("TEST 1: Authenticating against PRIMARY KDC")
     print("="*50)
     try:
-        success_primary = run_full_flow(KDC_HOST_PRIMARY, KDC_PRIMARY_PORT)
+        success_primary = asyncio.run(run_full_flow(KDC_HOST_PRIMARY, KDC_PRIMARY_PORT))
     except ConnectionRefusedError:
         print(f"Error: Connection refused. Is 'primary-kdc' running at {KDC_HOST_PRIMARY}:{KDC_PRIMARY_PORT}?")
         success_primary = False
@@ -331,7 +373,7 @@ if __name__ == "__main__":
     print("TEST 2: Authenticating against REPLICA KDC (Failover Test)")
     print("="*50)
     try:
-        success_replica = run_full_flow(KDC_HOST_REPLICA, KDC_REPLICA_PORT)
+        success_replica = asyncio.run(run_full_flow(KDC_HOST_REPLICA, KDC_REPLICA_PORT))
     except ConnectionRefusedError:
         print(f"Error: Connection refused. Is 'replica-kdc' running at {KDC_HOST_REPLICA}:{KDC_REPLICA_PORT}?")
         success_replica = False
