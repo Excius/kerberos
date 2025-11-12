@@ -2,6 +2,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useService } from "../hooks/useService";
 import { ArrowLeft } from "lucide-react";
 import { useState } from "react";
+import { toast } from "react-toastify";
 
 export default function ServicePage() {
   const { name } = useParams<{ name: string }>();
@@ -35,7 +36,7 @@ export default function ServicePage() {
   const accessService = async () => {
     const cacheStr = sessionStorage.getItem("kerberos_tgt_cache");
     if (!cacheStr) {
-      alert("No service ticket cached");
+      toast.error("No service ticket cached");
       return;
     }
     const cache = JSON.parse(cacheStr);
@@ -48,7 +49,7 @@ export default function ServicePage() {
     const authTimestamp = new Date().toISOString();
     const userStr = localStorage.getItem("auth_user");
     if (!userStr) {
-      alert("User not logged in");
+      toast.error("User not logged in");
       return;
     }
     const user = JSON.parse(userStr);

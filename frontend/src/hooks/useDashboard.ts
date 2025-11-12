@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "./useAuth";
+import { toast } from "react-toastify";
 
 const CA_URL = (import.meta as unknown as { env?: Record<string, string> }).env
   ?.VITE_CA_URL;
@@ -83,7 +84,7 @@ export function useDashboard() {
       }
     } else {
       const errorData = await resp.json().catch(() => ({}));
-      alert(errorData.error || "Failed to approve request");
+      toast.error(errorData.error || "Failed to approve request");
     }
   };
 
@@ -121,7 +122,7 @@ export function useDashboard() {
       }
     } else {
       const errorData = await resp.json().catch(() => ({}));
-      alert(errorData.error || "Failed to reject request");
+      toast.error(errorData.error || "Failed to reject request");
     }
   };
 

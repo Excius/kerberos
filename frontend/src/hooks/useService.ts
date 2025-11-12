@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "./useAuth";
+import { toast } from "react-toastify";
 
 const KDC_URL = "ws://localhost:8888"; // WebSocket URL for KDC
 const TICKET_CACHE_KEY = "kerberos_tgt_cache";
@@ -109,7 +110,7 @@ export function useService() {
         if (asResponse.status === "OK") {
           const encrypted_key_b64 = asResponse.encrypted_session_key;
           if (typeof encrypted_key_b64 !== "string") {
-            alert("Invalid response format");
+            toast.error("Invalid response format");
             return;
           }
           try {
@@ -146,7 +147,7 @@ export function useService() {
               JSON.stringify(cache_data)
             );
             setTgtObtained(true);
-            alert("TGT obtained successfully");
+            toast.success("TGT obtained successfully");
 
             // Start new connection for LIST_SERVICES
             const ws2 = new WebSocket(KDC_URL);
@@ -167,16 +168,16 @@ export function useService() {
             ws2.onerror = () => {};
             setTimeout(() => ws2.close(), 5000);
           } catch (error) {
-            alert(`Failed to decrypt session key: ${error}`);
+            toast.error(`Failed to decrypt session key: ${error}`);
           }
         } else {
-          alert(`Authentication failed: ${asResponse.message}`);
+          toast.error(`Authentication failed: ${asResponse.message}`);
         }
       }
     };
 
     ws.onerror = () => {
-      alert("Failed to connect to KDC");
+      toast.error("Failed to connect to KDC");
     };
 
     // Timeout after 10 seconds
@@ -206,7 +207,7 @@ export function useService() {
   }) => {
     const cacheStr = sessionStorage.getItem(TICKET_CACHE_KEY);
     if (!cacheStr) {
-      alert("No TGT cached");
+      toast.error("No TGT cached");
       return;
     }
     const cache = JSON.parse(cacheStr);
@@ -295,17 +296,17 @@ export function useService() {
             ...prev,
             [service.name]: service_session_key_b64,
           }));
-          alert(`Service ticket obtained for ${service.name}`);
+          toast.success(`Service ticket obtained for ${service.name}`);
         } else {
-          alert(`TGS request failed: ${response.message}`);
+          toast.error(`TGS request failed: ${response.message}`);
         }
       } catch (error) {
-        alert(`Error processing response: ${error}`);
+        toast.error(`Error processing response: ${error}`);
       }
       ws.close();
     };
     ws.onerror = () => {
-      alert("Failed to connect to KDC");
+      toast.error("Failed to connect to KDC");
     };
     setTimeout(() => ws.close(), 10000);
   };

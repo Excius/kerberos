@@ -6,6 +6,8 @@ import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import Dashboard from "./pages/Dashboard";
 import ServicePage from "./pages/ServicePage";
+import { ToastContainer } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
 
 function PendingModal() {
   const { pendingRequestId } = useAuth();
@@ -21,7 +23,17 @@ function PendingModal() {
           Please verify yourself from your other trusted device. The request is
           being processed in the background.
         </p>
-        <p className="text-sm text-gray-500">Request ID: {pendingRequestId}</p>
+        <p className="text-sm text-gray-500 mb-4">
+          Request ID: {pendingRequestId}
+        </p>
+        <div className="flex justify-end">
+          <button
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg transition-colors"
+          >
+            Back to Login
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -53,6 +65,7 @@ function App() {
             }
           />
         </Routes>
+        <ToastContainer />
       </BrowserRouter>
     </AuthProvider>
   );

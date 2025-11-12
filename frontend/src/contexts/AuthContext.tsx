@@ -187,6 +187,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = async (username: string, password: string) => {
     const keyPairStored = localStorage.getItem(`kerberos:keypair:${username}`);
+    const pendingRequestIdStored = localStorage.getItem(
+      `kerberos:pending:${username}`
+    );
+
+    if (pendingRequestIdStored && keyPairStored) {
+      // Resume polling for existing pending request from localStorage
+      setPendingRequestId(pendingRequestIdStored);
+      startPolling(pendingRequestIdStored, username, password);
+      return;
+    }
 
     if (pendingRequestId && !keyPairStored) {
       // Resume polling for existing pending request
@@ -286,6 +296,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setKeyPair(null);
     localStorage.removeItem("auth_user");
+    sessionStorage.removeItem("kerberos_tgt_cache");
   };
 
   return (
